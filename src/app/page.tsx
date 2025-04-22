@@ -283,7 +283,7 @@ export default function HomePage() {
 
   return (
     <main className="container mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-6 text-gray-900">
+      <h1 className="text-3xl font-bold mb-6 text-blue-400">
         Stock Exchange Platform
       </h1>
 
