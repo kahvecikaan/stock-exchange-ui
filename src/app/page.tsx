@@ -5,6 +5,8 @@ import { stockApi } from "@/services/api";
 import StockChart from "@/components/charts/StockChart";
 import SymbolSearch from "@/components/ui/SymbolSearch";
 import OrderForm from "@/components/features/orders/OrderForm";
+import PortfolioSummary from "@/components/features/portfolio/PortfolioSummary";
+import HoldingsTable from "@/components/features/portfolio/HoldingsTable";
 import { ChartData, StockPrice } from "@/types";
 
 // For testing purposes, we'll use userId = 1
@@ -20,10 +22,22 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [isMarketOpen, setIsMarketOpen] = useState(false);
   const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [portfolioRefreshCounter, setPortfolioRefreshCounter] = useState(0);
 
   // Order form state
   const [orderModalOpen, setOrderModalOpen] = useState(false);
   const [orderAction, setOrderAction] = useState<"BUY" | "SELL">("BUY");
+
+  // Function to refresh portfolio data
+  const refreshPortfolioData = () => {
+    setPortfolioRefreshCounter((prev) => prev + 1);
+  };
+
+  // Function to close modal and refresh data
+  const handleOrderComplete = () => {
+    setOrderModalOpen(false);
+    refreshPortfolioData();
+  };
 
   // Function to check if US market is open (basic version)
   const checkIfMarketOpen = () => {
@@ -255,7 +269,6 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Improved manual refresh button with stronger contrast and explicit function binding */}
         <button
           onClick={() => {
             console.log("Manual refresh button clicked");
@@ -322,20 +335,12 @@ export default function HomePage() {
 
           <hr className="my-4 border-gray-200" />
 
-          {/* Improved account section with better contrast */}
           <div className="space-y-2">
             <h3 className="font-semibold text-gray-800">Account</h3>
-            <div className="p-3 bg-blue-50 rounded-md border border-blue-100">
-              <div className="text-sm font-medium text-gray-800">
-                User ID: {DEFAULT_USER_ID}
-              </div>
-              <div className="font-bold text-lg mt-1 text-gray-900">
-                $10,000.00
-              </div>
-              <div className="text-xs font-medium text-gray-700">
-                Available balance
-              </div>
-            </div>
+            <PortfolioSummary
+              userId={DEFAULT_USER_ID}
+              refreshTrigger={portfolioRefreshCounter}
+            />
           </div>
         </div>
 
@@ -395,6 +400,16 @@ export default function HomePage() {
               Add to Watchlist
             </button>
           </div>
+
+          <div className="bg-white rounded-lg shadow-md p-4">
+            <h2 className="text-xl font-semibold mb-3 text-gray-800">
+              Your Portfolio
+            </h2>
+            <HoldingsTable
+              userId={DEFAULT_USER_ID}
+              refreshTrigger={portfolioRefreshCounter}
+            />
+          </div>
         </div>
       </div>
 
@@ -402,7 +417,7 @@ export default function HomePage() {
       {stockPrice && (
         <OrderForm
           isOpen={orderModalOpen}
-          onClose={() => setOrderModalOpen(false)}
+          onClose={handleOrderComplete}
           symbol={symbol}
           action={orderAction}
           initialPrice={stockPrice.price}

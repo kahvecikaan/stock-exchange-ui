@@ -6,7 +6,7 @@ import { OrderRequest } from "@/types";
 
 interface OrderFormProps {
   isOpen: boolean;
-  onClose: () => void;
+  onClose: () => void; // This should now refresh data in parent
   symbol: string;
   action: "BUY" | "SELL";
   initialPrice: number;
