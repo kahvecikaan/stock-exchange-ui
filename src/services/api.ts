@@ -74,7 +74,7 @@ apiClient.interceptors.request.use(request => {
   };
 
   // Order API service
-export const orderApi = {
+  export const orderApi = {
     // Place a new order
     placeOrder: async (orderData: OrderRequest): Promise<Order> => {
         const response = await apiClient.post(`/orders`, orderData);
@@ -111,5 +111,23 @@ export const orderApi = {
     // Remove a symbol from watchlist
     removeFromWatchlist: async (userId: number, symbol: string): Promise<void> => {
         await apiClient.delete(`/watchlists/${userId}/${symbol}`);
+    }
+  };
+
+  // User API service
+  export const userApi = {
+    getUserPortfolio: async (userId: number) => {
+      const response = await apiClient.get(`/portfolios/${userId}`);
+      return response.data;
+    },
+    
+    getHolding: async (userId: number, symbol: string) => {
+      const response = await apiClient.get(`/portfolios/${userId}/holdings/${symbol}`);
+      return response.data;
+    },
+    
+    refreshPortfolio: async (userId: number) => {
+      const response = await apiClient.post(`/portfolios/${userId}/refresh`);
+      return response.data;
     }
   };
