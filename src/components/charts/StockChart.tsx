@@ -1,4 +1,3 @@
-// StockChart.tsx with enhanced visibility
 "use client";
 
 import {
@@ -13,6 +12,7 @@ import {
   ReferenceLine,
 } from "recharts";
 import { ChartData } from "@/types";
+import { useMemo } from "react";
 
 interface StockChartProps {
   chartData: ChartData | null;
@@ -29,13 +29,14 @@ const StockChart = ({
   timeframe,
   onTimeframeChange,
 }: StockChartProps) => {
-  // Time period options
+  // Time period options - Added 5y option
   const timeframeOptions = [
     { value: "1d", label: "1 Day" },
     { value: "1w", label: "1 Week" },
     { value: "1m", label: "1 Month" },
     { value: "3m", label: "3 Months" },
     { value: "1y", label: "1 Year" },
+    { value: "5y", label: "5 Years" },
   ];
 
   // Loading and error states (unchanged)
@@ -63,7 +64,7 @@ const StockChart = ({
     );
   }
 
-  // Data transformation (unchanged)
+  // Data transformation
   const data = chartData.labels.map((label, index) => {
     return {
       name: label,
@@ -72,7 +73,17 @@ const StockChart = ({
     };
   });
 
+  // Calculate price metrics
   const startingPrice = data[0]?.Price || 0;
+  const lastPrice = data[data.length - 1]?.Price || 0;
+  const priceChange = lastPrice - startingPrice;
+  const percentChange =
+    startingPrice !== 0 ? (priceChange / startingPrice) * 100 : 0;
+  const isPriceUp = priceChange >= 0;
+
+  // Determine chart color based on price movement (green for up, red for down)
+  const chartColor = isPriceUp ? "#22c55e" : "#ef4444"; // Green or Red
+
   const priceValues = data
     .map((item) => item.Price)
     .filter((price) => !isNaN(price));
@@ -88,11 +99,11 @@ const StockChart = ({
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
       const currentPrice = payload[0].value;
-      const priceChange = currentPrice - startingPrice;
-      const percentChange =
-        startingPrice !== 0 ? (priceChange / startingPrice) * 100 : 0;
+      const pointPriceChange = currentPrice - startingPrice;
+      const pointPercentChange =
+        startingPrice !== 0 ? (pointPriceChange / startingPrice) * 100 : 0;
 
-      const isPositive = priceChange >= 0;
+      const isPositive = pointPriceChange >= 0;
       const changeColor = isPositive ? "#22c55e" : "#ef4444"; // Using hex for consistency
       const changeSign = isPositive ? "+" : "";
 
@@ -107,8 +118,8 @@ const StockChart = ({
           </p>
           <p className="text-base font-medium" style={{ color: changeColor }}>
             Change: {changeSign}
-            {priceChange.toFixed(2)} ({changeSign}
-            {percentChange.toFixed(2)}%)
+            {pointPriceChange.toFixed(2)} ({changeSign}
+            {pointPercentChange.toFixed(2)}%)
           </p>
         </div>
       );
@@ -124,14 +135,24 @@ const StockChart = ({
           <p className="text-sm font-medium text-gray-700">
             {chartData.title.replace(symbol, "").trim()}
           </p>
+          {/* Add price change summary */}
+          <p
+            className={`text-sm font-medium ${
+              isPriceUp ? "text-green-600" : "text-red-600"
+            } mt-1`}
+          >
+            {isPriceUp ? "+" : ""}
+            {priceChange.toFixed(2)} ({isPriceUp ? "+" : ""}
+            {percentChange.toFixed(2)}%)
+          </p>
         </div>
 
-        <div className="flex space-x-2">
+        <div className="flex flex-wrap gap-2 justify-end">
           {timeframeOptions.map((option) => (
             <button
               key={option.value}
               onClick={() => onTimeframeChange(option.value)}
-              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
                 timeframe === option.value
                   ? "bg-blue-500 text-white"
                   : "bg-gray-200 hover:bg-gray-300 text-gray-800"
@@ -147,15 +168,18 @@ const StockChart = ({
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={data}
-            margin={{ top: 10, right: 35, left: 20, bottom: 15 }}
+            margin={{ top: 10, right: 35, left: 20, bottom: 30 }}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#d1d5db" />
             <XAxis
               dataKey="name"
-              tick={{ fontSize: 13, fill: "#111827", fontWeight: 500 }}
+              tick={{ fontSize: 12, fill: "#111827", fontWeight: 500 }}
               tickLine={{ stroke: "#4b5563" }}
               axisLine={{ stroke: "#4b5563" }}
               padding={{ left: 10, right: 10 }}
+              angle={timeframe === "1w" ? -30 : 0} // Rotate labels for weekly chart
+              height={60}
+              textAnchor={timeframe === "1w" ? "end" : "middle"}
             />
             <YAxis
               domain={[minPrice - pricePadding, maxPrice + pricePadding]}
@@ -190,17 +214,17 @@ const StockChart = ({
               }}
             />
 
-            {/* Price line */}
+            {/* Price line - color changes based on price movement */}
             <Line
               type="monotone"
               dataKey="Price"
               name="Price"
-              stroke="#4F46E5"
+              stroke={chartColor}
               strokeWidth={3}
               dot={false}
               activeDot={{
                 r: 6,
-                fill: "#4F46E5",
+                fill: chartColor,
                 stroke: "#fff",
                 strokeWidth: 2,
               }}
