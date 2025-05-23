@@ -1,19 +1,19 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { stockApi } from "@/services/api";
+import { stockApi, marketApi } from "@/services/api";
 import StockChart from "@/components/charts/StockChart";
 import SymbolSearch from "@/components/ui/SymbolSearch";
 import OrderForm from "@/components/features/orders/OrderForm";
 import PortfolioSummary from "@/components/features/portfolio/PortfolioSummary";
 import HoldingsTable from "@/components/features/portfolio/HoldingsTable";
 import { ChartData, StockPrice } from "@/types";
+import useStockWebSocket from "@/hooks/useStockWebSocket";
 
-// For testing purposes, we'll use userId = 1
 const DEFAULT_USER_ID = 1;
 
 export default function HomePage() {
-  // State variables
+  // Core application state
   const [symbol, setSymbol] = useState("ARM");
   const [timeframe, setTimeframe] = useState("1m");
   const [chartData, setChartData] = useState<ChartData | null>(null);
@@ -21,223 +21,274 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isMarketOpen, setIsMarketOpen] = useState(false);
+
+  // Enhanced timeframe-aware price change management
+  // This centralizes all price change calculations to ensure consistency across components
+  const [currentTimeframeStartPrice, setCurrentTimeframeStartPrice] =
+    useState<number>(0);
+  const [currentPrice, setCurrentPrice] = useState<number>(0);
+  const [timeframeChangeMetrics, setTimeframeChangeMetrics] = useState({
+    priceChange: 0,
+    percentChange: 0,
+    isPriceUp: false,
+  });
+
+  // Component management state
   const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [portfolioRefreshCounter, setPortfolioRefreshCounter] = useState(0);
 
-  // Order form state
-  const [orderModalOpen, setOrderModalOpen] = useState(false);
-  const [orderAction, setOrderAction] = useState<"BUY" | "SELL">("BUY");
+  // Live price WebSocket hook - using the centrally managed current price
+  const {
+    price: wsPrice,
+    isConnected: wsConnected,
+    error: wsError,
+    reconnect: reconnectWs,
+  } = useStockWebSocket({ symbol, initialPrice: stockPrice });
 
-  // Function to refresh portfolio data
-  const refreshPortfolioData = () => {
-    setPortfolioRefreshCounter((prev) => prev + 1);
-  };
+  // Enhanced data loading with centralized timeframe baseline management
+  useEffect(() => {
+    // Clear all states when starting new data load
+    setChartData(null);
+    setStockPrice(null);
+    setCurrentTimeframeStartPrice(0);
+    setCurrentPrice(0);
+    setTimeframeChangeMetrics({
+      priceChange: 0,
+      percentChange: 0,
+      isPriceUp: false,
+    });
+    setError(null);
+    setLoading(true);
 
-  // Function to close modal and refresh data
-  const handleOrderComplete = () => {
-    setOrderModalOpen(false);
-    refreshPortfolioData();
-  };
+    (async () => {
+      try {
+        // Load both chart data and current stock price information
+        const [chartDataResponse, stockPriceResponse] = await Promise.all([
+          stockApi.getStockChart(symbol, timeframe),
+          stockApi.getCurrentPrice(symbol),
+        ]);
 
-  // Function to check if US market is open (basic version)
-  const checkIfMarketOpen = () => {
-    const now = new Date();
-    const nyTime = new Date(
-      now.toLocaleString("en-US", { timeZone: "America/New_York" })
-    );
+        // Store the loaded data
+        setChartData(chartDataResponse);
+        setStockPrice(stockPriceResponse);
 
-    // Market is open Monday-Friday, 9:30 AM - 4:00 PM ET
-    const day = nyTime.getDay();
-    const hour = nyTime.getHours();
-    const minute = nyTime.getMinutes();
+        // Extract price dataset for establishing timeframe baseline
+        const priceDataset = chartDataResponse.datasets.Price || [];
+        const validPrices = priceDataset.filter(
+          (price) => price && !isNaN(price) && price > 0
+        );
 
-    // Weekend check (0 = Sunday, 6 = Saturday)
-    if (day === 0 || day === 6) return false;
+        if (validPrices.length > 0) {
+          // Establish timeframe baseline using first and last prices from the dataset
+          const timeframeStartPrice = validPrices[0]; // Beginning of the timeframe period
+          const timeframeEndPrice = validPrices[validPrices.length - 1]; // End of the timeframe period
 
-    // Hours check (9:30 AM - 4:00 PM)
-    if (hour < 9 || hour > 16) return false;
-    if (hour === 9 && minute < 30) return false;
+          // Set up the centralized timeframe-aware state
+          setCurrentTimeframeStartPrice(timeframeStartPrice);
+          setCurrentPrice(timeframeEndPrice);
 
-    return true;
-  };
+          // Calculate the overall change for this timeframe period
+          const change = timeframeEndPrice - timeframeStartPrice;
+          const percentChange =
+            timeframeStartPrice > 0 ? (change / timeframeStartPrice) * 100 : 0;
 
-  // Function to fetch stock data
-  const fetchStockData = async (skipLoadingState = false) => {
-    try {
-      if (!skipLoadingState) {
-        setLoading(true);
-      }
-      setError(null);
+          setTimeframeChangeMetrics({
+            priceChange: change,
+            percentChange: percentChange,
+            isPriceUp: change >= 0,
+          });
 
-      // Fetch data in parallel
-      const [chartResponse, priceResponse] = await Promise.all([
-        stockApi.getStockChart(symbol, timeframe),
-        stockApi.getCurrentPrice(symbol),
-      ]);
-
-      setChartData(chartResponse);
-      setStockPrice(priceResponse);
-
-      // Check if market is open to determine refresh rate
-      const marketOpen = checkIfMarketOpen();
-      setIsMarketOpen(marketOpen);
-    } catch (err) {
-      console.error("Error fetching data:", err);
-      setError("Failed to load data. Please check if the backend is running.");
-    } finally {
-      if (!skipLoadingState) {
+          console.log(
+            `Established centralized timeframe baseline for ${symbol} ${timeframe}:`,
+            {
+              symbol,
+              timeframe,
+              startPrice: timeframeStartPrice.toFixed(2),
+              endPrice: timeframeEndPrice.toFixed(2),
+              change: change.toFixed(2),
+              percentChange: percentChange.toFixed(2),
+              dataPoints: validPrices.length,
+            }
+          );
+        } else {
+          console.warn(
+            `No valid price data available for ${symbol} ${timeframe}`
+          );
+        }
+      } catch (e) {
+        console.error("Failed to load stock data:", e);
+        setError("Failed to load stock data");
+      } finally {
         setLoading(false);
       }
-    }
-  };
+    })();
+  }, [symbol, timeframe]); // Recalculate baseline whenever symbol or timeframe changes
 
-  // Initial data load and setup refresh timer
+  // Enhanced WebSocket integration with timeframe-aware price updates
   useEffect(() => {
-    // Initial data fetch
-    fetchStockData();
+    // Validate that we have the necessary data for price update calculations
+    if (
+      !wsPrice ||
+      currentTimeframeStartPrice <= 0 ||
+      wsPrice.symbol.toUpperCase() !== symbol.toUpperCase()
+    ) {
+      return;
+    }
 
-    // Start refresh timer for price updates
-    const setupRefreshTimer = () => {
-      // Clear any existing timer
-      if (refreshTimerRef.current) {
-        clearInterval(refreshTimerRef.current);
-      }
+    console.log(`Processing WebSocket price update for ${symbol}:`, {
+      newPrice: wsPrice.price.toFixed(2),
+      baselinePrice: currentTimeframeStartPrice.toFixed(2),
+      timeframe: timeframe,
+    });
 
-      // Set up a timer that checks market status and updates price accordingly
-      refreshTimerRef.current = setInterval(
-        () => {
-          const marketOpen = checkIfMarketOpen();
-          setIsMarketOpen(marketOpen);
+    // Update current price state
+    setCurrentPrice(wsPrice.price);
 
-          // Refresh price data more frequently during market hours
-          if (marketOpen) {
-            // During market hours, update every 15 seconds
-            stockApi
-              .getCurrentPrice(symbol)
-              .then(setStockPrice)
-              .catch(console.error);
-          }
+    // Recalculate change metrics using the established timeframe baseline
+    const change = wsPrice.price - currentTimeframeStartPrice;
+    const percentChange = (change / currentTimeframeStartPrice) * 100;
+
+    // Update the centralized change metrics that drive all UI displays
+    setTimeframeChangeMetrics({
+      priceChange: change,
+      percentChange: percentChange,
+      isPriceUp: change >= 0,
+    });
+
+    // Update the stockPrice state with calculated change information for other components
+    setStockPrice({
+      ...wsPrice,
+      change: change,
+      changePercent: percentChange,
+    });
+
+    // Append new data point to chart data for real-time chart updates
+    setChartData((prevChartData) => {
+      if (!prevChartData) return prevChartData;
+
+      const timestamp =
+        wsPrice.zonedTimestamp ?? wsPrice.timestamp ?? new Date().toISOString();
+      const label = new Date(timestamp).toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      return {
+        ...prevChartData,
+        labels: [...prevChartData.labels, label],
+        datasets: {
+          ...prevChartData.datasets,
+          Price: [...(prevChartData.datasets.Price || []), wsPrice.price],
         },
-        isMarketOpen ? 15000 : 60000
-      ); // 15 seconds during market hours, 1 minute otherwise
-    };
+      };
+    });
+  }, [wsPrice, currentTimeframeStartPrice, symbol, timeframe]);
 
-    setupRefreshTimer();
+  // Manual price refresh functionality with timeframe awareness
+  const refreshPrice = async () => {
+    try {
+      const freshStockPrice = await stockApi.getCurrentPrice(symbol);
 
-    // Cleanup timer on unmount
-    return () => {
-      if (refreshTimerRef.current) {
-        clearInterval(refreshTimerRef.current);
+      if (currentTimeframeStartPrice > 0) {
+        // Calculate change relative to current timeframe baseline
+        const change = freshStockPrice.price - currentTimeframeStartPrice;
+        const percentChange = (change / currentTimeframeStartPrice) * 100;
+
+        // Update all price-related state consistently
+        setCurrentPrice(freshStockPrice.price);
+        setTimeframeChangeMetrics({
+          priceChange: change,
+          percentChange: percentChange,
+          isPriceUp: change >= 0,
+        });
+        setStockPrice({
+          ...freshStockPrice,
+          change,
+          changePercent: percentChange,
+        });
+      } else {
+        // Fallback for cases where baseline hasn't been established yet
+        setStockPrice(freshStockPrice);
       }
-    };
-  }, []); // Empty dependency array for initial setup only
-
-  // Fetch data when symbol or timeframe changes
-  useEffect(() => {
-    fetchStockData();
-
-    // Also reset the refresh timer when symbol changes
-    if (refreshTimerRef.current) {
-      clearInterval(refreshTimerRef.current);
+    } catch (e) {
+      console.error("Failed to refresh price:", e);
     }
+  };
 
-    refreshTimerRef.current = setInterval(
-      () => {
-        const marketOpen = checkIfMarketOpen();
-        if (marketOpen) {
-          stockApi
-            .getCurrentPrice(symbol)
-            .then(setStockPrice)
-            .catch(console.error);
+  // Market status monitoring with timeframe-aware price updates
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
+
+    const checkMarketStatusAndUpdatePrices = async () => {
+      try {
+        const { isOpen } = await marketApi.getStatus();
+        setIsMarketOpen(isOpen);
+
+        // Only refresh prices when market is open and we have a proper baseline
+        if (isOpen && currentTimeframeStartPrice > 0) {
+          refreshPrice();
         }
-      },
-      isMarketOpen ? 15000 : 60000
-    );
-
-    return () => {
-      if (refreshTimerRef.current) {
-        clearInterval(refreshTimerRef.current);
+      } catch (e) {
+        console.error("Market status check failed", e);
       }
     };
-  }, [symbol, timeframe]);
 
-  // Handle symbol selection from the search component
-  const handleSymbolSelect = (newSymbol: string) => {
-    setSymbol(newSymbol);
+    // Initial check and then periodic polling
+    checkMarketStatusAndUpdatePrices();
+    intervalId = setInterval(checkMarketStatusAndUpdatePrices, 30_000);
+
+    return () => clearInterval(intervalId);
+  }, [symbol, currentTimeframeStartPrice]); // Include baseline in dependencies
+
+  // Portfolio and order management functions
+  const refreshPortfolio = () => setPortfolioRefreshCounter((prev) => prev + 1);
+  const [orderModalOpen, setOrderModalOpen] = useState(false);
+  const [orderAction, setOrderAction] = useState<"BUY" | "SELL">("BUY");
+  const handleOrderComplete = () => {
+    setOrderModalOpen(false);
+    refreshPortfolio();
   };
 
-  // Handle timeframe change
-  const handleTimeframeChange = (newTimeframe: string) => {
-    setTimeframe(newTimeframe);
-  };
-
-  // Handle buy button click
-  const handleBuyClick = () => {
-    setOrderAction("BUY");
-    setOrderModalOpen(true);
-  };
-
-  // Handle sell button click
-  const handleSellClick = () => {
-    setOrderAction("SELL");
-    setOrderModalOpen(true);
-  };
-
-  // Format price with color based on change
+  // Enhanced price display component using centralized timeframe metrics
   const renderPrice = () => {
     if (!stockPrice) return null;
 
-    const isPositive = stockPrice.changePercent && stockPrice.changePercent > 0;
-    const isNegative = stockPrice.changePercent && stockPrice.changePercent < 0;
+    // Use the centrally managed timeframe change metrics for consistent display
+    const { timestamp, zonedTimestamp } = stockPrice;
+    const displayPrice = currentPrice || stockPrice.price;
+    const { priceChange, percentChange, isPriceUp } = timeframeChangeMetrics;
 
-    const changeColor = isPositive
+    // Format values for display
+    const formattedPrice = displayPrice.toFixed(2);
+    const formattedChange = priceChange.toFixed(2);
+    const formattedPercent = percentChange.toFixed(2);
+    const changeSign = isPriceUp ? "+" : "";
+    const lastUpdateTime = new Date(
+      zonedTimestamp ?? timestamp ?? ""
+    ).toLocaleString();
+
+    // Determine color styling based on price direction
+    const changeColorClass = isPriceUp
       ? "text-green-600"
-      : isNegative
+      : priceChange < 0
       ? "text-red-600"
-      : "text-gray-600";
-
-    const lastUpdatedISO = stockPrice.zonedTimestamp ?? stockPrice.timestamp;
-
-    console.log(
-      "Raw timestamp data:",
-      stockPrice.zonedTimestamp,
-      stockPrice.timestamp
-    );
-
-    // Calculate how old the data is
-    const dataTimestamp = new Date(lastUpdatedISO);
-    const now = new Date();
-    const dataAgeHours =
-      (now.getTime() - dataTimestamp.getTime()) / (1000 * 60 * 60);
-    const isStale = isMarketOpen && dataAgeHours > 1;
-
-    // Format the updated time with seconds for better visibility of refreshes
-    const lastUpdated = new Date(lastUpdatedISO).toLocaleString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+      : "text-gray-700";
 
     return (
       <div className="mb-4">
-        <div className="flex items-baseline">
+        <div className="flex items-baseline flex-wrap">
           <h2 className="text-3xl font-bold text-gray-900">
-            ${stockPrice.price.toFixed(2)}
+            ${formattedPrice}
           </h2>
-          {stockPrice.changePercent && (
-            <span className={`ml-2 ${changeColor} text-lg font-semibold`}>
-              {stockPrice.change && stockPrice.change > 0 ? "+" : ""}
-              {stockPrice.change?.toFixed(2)} (
-              {stockPrice.changePercent.toFixed(2)}%)
-            </span>
-          )}
+          <span className={`ml-2 text-lg font-semibold ${changeColorClass}`}>
+            {changeSign}
+            {formattedChange} ({changeSign}
+            {formattedPercent}%)
+          </span>
 
-          {/* Add market status indicator */}
+          {/* Market status indicator */}
           <span
-            className="ml-3 px-2 py-1 text-xs rounded-full font-medium"
+            className="ml-3 px-2 py-1 text-xs font-medium rounded-full"
             style={{
               backgroundColor: isMarketOpen ? "#dcfce7" : "#fee2e2",
               color: isMarketOpen ? "#166534" : "#991b1b",
@@ -245,166 +296,148 @@ export default function HomePage() {
           >
             {isMarketOpen ? "Market Open" : "Market Closed"}
           </span>
-        </div>
-        <div className="text-sm font-medium text-gray-800 mt-1">
-          Last updated: {lastUpdated}
+
+          {/* WebSocket connection status indicator */}
+          <span
+            className="ml-3 px-2 py-1 text-xs font-medium rounded-full"
+            style={{
+              backgroundColor: wsConnected ? "#dbeafe" : "#fef9c3",
+              color: wsConnected ? "#1e40af" : "#854d0e",
+            }}
+          >
+            {wsConnected ? "Live" : "Polling"}
+          </span>
         </div>
 
-        {/* Add data age warning */}
-        {isStale && (
-          <div className="mt-2 text-amber-600 text-sm flex items-center">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-4 w-4 mr-1"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path
-                fillRule="evenodd"
-                d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-                clipRule="evenodd"
-              />
-            </svg>
-            Data may be delayed by {Math.round(dataAgeHours)} hours
+        <div className="text-sm text-gray-600 mt-1">
+          Last updated: {lastUpdateTime}
+          {currentTimeframeStartPrice > 0}
+        </div>
+
+        <div className="flex space-x-2 mt-3">
+          <button
+            onClick={refreshPrice}
+            className="px-3 py-1.5 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 transition-colors"
+          >
+            Refresh Price
+          </button>
+          <button
+            onClick={reconnectWs}
+            disabled={wsConnected}
+            className="px-3 py-1.5 bg-purple-600 text-white rounded-md text-sm hover:bg-purple-700 disabled:opacity-50 transition-colors"
+          >
+            Reconnect Live
+          </button>
+        </div>
+
+        {error && (
+          <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+            {error}
           </div>
         )}
-
-        <button
-          onClick={() => {
-            console.log("Manual refresh button clicked");
-            fetchStockData(true);
-          }}
-          className="mt-3 px-3 py-1.5 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-md font-medium flex items-center shadow-sm text-sm"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-4 w-4 mr-1"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-          >
-            <path
-              fillRule="evenodd"
-              d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z"
-              clipRule="evenodd"
-            />
-          </svg>
-          Refresh Price
-        </button>
       </div>
     );
   };
 
   return (
     <main className="container mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-6 text-blue-400">
+      <h1 className="text-3xl font-bold mb-6 text-blue-500">
         Stock Exchange Platform
       </h1>
-
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
-        {/* Sidebar with option links */}
-        <div className="md:col-span-1 bg-white rounded-lg shadow-md p-4">
-          <h2 className="text-xl font-semibold mb-4 text-gray-800">
-            Navigation
-          </h2>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        {/* Sidebar Navigation */}
+        <div className="md:col-span-1 bg-white p-4 rounded-lg shadow">
+          <h2 className="font-semibold text-gray-900 mb-3">Navigation</h2>
           <nav className="space-y-2">
             <a
               href="/"
-              className="block p-2 rounded bg-blue-100 text-blue-800 font-medium"
+              className="block p-2 text-gray-900 rounded hover:bg-gray-100 transition-colors"
             >
               Dashboard
             </a>
             <a
               href="/portfolio"
-              className="block p-2 rounded hover:bg-gray-100 text-gray-700 font-medium"
+              className="block p-2 text-gray-900 rounded hover:bg-gray-100 transition-colors"
             >
               Portfolio
             </a>
             <a
               href="/orders"
-              className="block p-2 rounded hover:bg-gray-100 text-gray-700 font-medium"
+              className="block p-2 text-gray-900 rounded hover:bg-gray-100 transition-colors"
             >
               Orders
             </a>
             <a
               href="/watchlist"
-              className="block p-2 rounded hover:bg-gray-100 text-gray-700 font-medium"
+              className="block p-2 text-gray-900 rounded hover:bg-gray-100 transition-colors"
             >
               Watchlist
             </a>
           </nav>
-
-          <hr className="my-4 border-gray-200" />
-
-          <div className="space-y-2">
-            <h3 className="font-semibold text-gray-800">Account</h3>
-            <PortfolioSummary
-              userId={DEFAULT_USER_ID}
-              refreshTrigger={portfolioRefreshCounter}
-            />
-          </div>
+          <hr className="my-4" />
+          <PortfolioSummary
+            userId={DEFAULT_USER_ID}
+            refreshTrigger={portfolioRefreshCounter}
+          />
         </div>
 
-        {/* Main content area */}
+        {/* Main Content Area */}
         <div className="md:col-span-3 space-y-6">
-          {/* Symbol search */}
-          <div className="bg-white rounded-lg shadow-md p-4">
-            <h2 className="text-xl font-semibold mb-3 text-gray-800">
-              Stock Lookup
-            </h2>
-            <SymbolSearch
-              onSymbolSelect={handleSymbolSelect}
-              initialSymbol={symbol}
-            />
+          {/* Stock Search Section */}
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h2 className="font-semibold text-gray-900 mb-3">Stock Lookup</h2>
+            <SymbolSearch onSymbolSelect={setSymbol} initialSymbol={symbol} />
           </div>
 
-          {/* Stock price info */}
-          <div className="bg-white rounded-lg shadow-md p-4">
-            <h2 className="text-xl font-semibold mb-2 text-gray-800">
-              {symbol}
-            </h2>
+          {/* Price Display Section */}
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h2 className="text-xl mb-2 text-gray-900">{symbol}</h2>
             {loading ? (
-              <div className="animate-pulse text-gray-500 font-medium">
-                Loading price data...
+              <div className="animate-pulse text-gray-700">
+                Loading stock data...
               </div>
-            ) : error ? (
-              <div className="text-red-500">{error}</div>
             ) : (
               renderPrice()
             )}
           </div>
 
-          {/* Stock chart */}
+          {/* Enhanced Stock Chart with centralized metrics */}
           <StockChart
             chartData={chartData}
             loading={loading}
             error={error}
             timeframe={timeframe}
-            onTimeframeChange={handleTimeframeChange}
+            onTimeframeChange={setTimeframe}
+            // Pass centralized timeframe metrics to chart for consistency
+            timeframeStartPrice={currentTimeframeStartPrice}
+            timeframeChangeMetrics={timeframeChangeMetrics}
           />
 
-          {/* Quick actions */}
+          {/* Trading Action Buttons */}
           <div className="flex space-x-4">
             <button
-              className="flex-1 bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-medium shadow-sm"
-              onClick={handleBuyClick}
+              onClick={() => {
+                setOrderAction("BUY");
+                setOrderModalOpen(true);
+              }}
+              className="flex-1 bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 transition-colors font-medium"
             >
               Buy {symbol}
             </button>
             <button
-              className="flex-1 bg-red-600 hover:bg-red-700 text-white py-3 rounded-lg font-medium shadow-sm"
-              onClick={handleSellClick}
+              onClick={() => {
+                setOrderAction("SELL");
+                setOrderModalOpen(true);
+              }}
+              className="flex-1 bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition-colors font-medium"
             >
               Sell {symbol}
             </button>
-            <button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-medium shadow-sm">
-              Add to Watchlist
-            </button>
           </div>
 
-          <div className="bg-white rounded-lg shadow-md p-4">
-            <h2 className="text-xl font-semibold mb-3 text-gray-800">
-              Your Portfolio
-            </h2>
+          {/* Portfolio Holdings Section */}
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h2 className="font-semibent text-gray-900 mb-3">Your Portfolio</h2>
             <HoldingsTable
               userId={DEFAULT_USER_ID}
               refreshTrigger={portfolioRefreshCounter}
@@ -413,14 +446,14 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* Order Form Modal */}
+      {/* Order Entry Modal */}
       {stockPrice && (
         <OrderForm
           isOpen={orderModalOpen}
           onClose={handleOrderComplete}
           symbol={symbol}
           action={orderAction}
-          initialPrice={stockPrice.price}
+          initialPrice={currentPrice || stockPrice.price}
           userId={DEFAULT_USER_ID}
         />
       )}
