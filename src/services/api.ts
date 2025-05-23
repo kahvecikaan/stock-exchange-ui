@@ -131,3 +131,19 @@ apiClient.interceptors.request.use(request => {
       return response.data;
     }
   };
+
+  export const marketApi = {
+    getStatus: async (): Promise<{
+      isOpen: boolean;
+      nextOpen: string;
+      nextClose: string;
+    }> => {
+      const resp = await apiClient.get(`/market/status`);
+      const { is_open, next_open, next_close } = resp.data;
+      return {
+        isOpen: is_open,
+        nextOpen: next_open,
+        nextClose: next_close,
+      };
+    },
+  };
